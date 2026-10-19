@@ -1,79 +1,44 @@
-// Menu admin: add, edit and delete dishes, with their 3D models.
-// The site is static (GitHub Pages), so saving = committing to the site's GitHub repository.
-// Only people with a GitHub token that can write to that repository can publish: that's the admin check.
+// Menu admin dashboard: menu items (add / edit / sold out / reorder / delete), categories and settings.
+// Talks to the menu server (server/server.js); the login is checked on the server.
 
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { GLTFExporter } from "three/addons/exporters/GLTFExporter.js";
 
 const $ = (id) => document.getElementById(id);
-const BRANCH = "main";
-const TOKEN_KEY = "arMenuAdminToken";
-const MAX_MODEL_MB = 25;
+const MAX_UPLOAD_MB = 25;
 
-// Admin login. NOTE: this site has no server, so this check runs in the browser and anyone can read these
-// values in the page source. It keeps casual visitors out of the admin screen; it is not real security.
-// Publishing additionally needs a GitHub token (below), which is never stored in the site's code.
-const ADMIN_USERNAME = "admin";
-const ADMIN_PASSWORD = "1234";
-const LOGIN_KEY = "arMenuAdminLoggedIn";
-
-// owner/repo: from the GitHub Pages address (owner.github.io/repo/), or this project's repository.
-const REPO = (() => {
-  const host = location.hostname;
-  if (host.endsWith(".github.io")) {
-    const owner = host.split(".")[0];
-    const repo = location.pathname.split("/").filter(Boolean)[0] || `${owner}.github.io`;
-    return `${owner}/${repo}`;
-  }
-  return "Snail923/ar-menu";
-})();
-
-let token = null;
-let menu = null; // { restaurant, categories: [{ id, name, dishes: [...] }] }
-let editing = null; // { dish, categoryId } or null for a new dish
-let prepared = null; // processed model: { glb, png, width, height, depth }
+let menu = null;
+let view = "items";
+let editing = null; // dish being edited, or null for a new one
+let modelFile = null; // newly chosen GLB
+let photoFile = null; // newly chosen photo
+let preparedModel = null; // { glb, png, width, height } after scaling
 let previewUrl = null;
 
-// ------------------------------------------------------------------ storage (may be unavailable)
+// ------------------------------------------------------------------ server API
 
-// Files straight from the repository: available immediately, unlike the Pages site which takes ~1 minute.
-const repoFile = (path) => `https://raw.githubusercontent.com/${REPO}/${BRANCH}/${path}`;
-
-const session = {
-  loggedIn: () => { try { return sessionStorage.getItem(LOGIN_KEY) === "1"; } catch { return false; } },
-  set: () => { try { sessionStorage.setItem(LOGIN_KEY, "1"); } catch { /* lasts until reload */ } },
-  clear: () => { try { sessionStorage.removeItem(LOGIN_KEY); } catch { /* ignore */ } },
-};
-
-const store = {
-  get: () => { try { return localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY); } catch { return null; } },
-  set: (value, remember) => {
-    try { (remember ? localStorage : sessionStorage).setItem(TOKEN_KEY, value); } catch { /* not saved */ }
-  },
-  clear: () => { try { localStorage.removeItem(TOKEN_KEY); sessionStorage.removeItem(TOKEN_KEY); } catch { /* ignore */ } },
-};
-
-// ------------------------------------------------------------------ GitHub API
-
-async function gh(path, options = {}) {
-  const res = await fetch(`https://api.github.com/repos/${REPO}${path}`, {
-    ...options,
-    headers: {
-      Accept: "application/vnd.github+json",
-      Authorization: `Bearer ${token}`,
-      "X-GitHub-Api-Version": "2022-11-28",
-      ...(options.body ? { "Content-Type": "application/json" } : {}),
-    },
+async function api(method, path, body) {
+  const res = await fetch(`api/${path}`, {
+    method,
+    credentials: "same-origin",
+    headers: body ? { "Content-Type": "application/json" } : {},
+    body: body ? JSON.stringify(body) : undefined,
   });
-  if (!res.ok) {
-    let detail = "";
-    try { detail = (await res.json()).message || ""; } catch { /* no body */ }
-    const err = new Error(`GitHub ${res.status}${detail ? `: ${detail}` : ""}`);
-    err.status = res.status;
-    throw err;
+  let data = null;
+  try { data = await res.json(); } catch { /* not JSON */ }
+  if (res.status === 401 && path !== "login") {
+    showLogin("Your session ended. Log in again.");
+    throw new Error("Please log in again.");
   }
-  return res.status === 204 ? null : res.json();
+  if (!res.ok) throw new Error(data?.error || `The server answered ${res.status}.`);
+  return data;
+}
+
+async function reloadMenu() {
+  menu = await api("GET", "menu");
+  $("side-name").textContent = menu.restaurant.name;
+  render();
 }
 
 function toBase64(bytes) {
@@ -83,212 +48,277 @@ function toBase64(bytes) {
   return btoa(s);
 }
 
-function fromBase64Text(b64) {
-  const bin = atob(b64.replace(/\n/g, ""));
-  return new TextDecoder().decode(Uint8Array.from(bin, (c) => c.charCodeAt(0)));
+async function upload(kind, name, bytes) {
+  const { path } = await api("POST", "uploads", { kind, name, data: toBase64(bytes) });
+  return path;
 }
 
-async function loadMenuFromRepo() {
-  const file = await gh(`/contents/data/menu.json?ref=${BRANCH}`);
-  return JSON.parse(fromBase64Text(file.content));
+// ------------------------------------------------------------------ toast
+
+let toastTimer = 0;
+function toast(text, isError = false) {
+  const el = $("toast");
+  el.textContent = text;
+  el.className = `toast show${isError ? " error" : ""}`;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => (el.className = "toast"), isError ? 5000 : 2500);
 }
 
-/**
- * One commit with several file changes. files: [{ path, bytes | text }] to write, deletes: [path] to remove.
- * Retries once if someone else published in between.
- */
-async function commitFiles(message, files, deletes = [], attempt = 0) {
-  const ref = await gh(`/git/ref/heads/${BRANCH}`);
-  const head = ref.object.sha;
-  const base = await gh(`/git/commits/${head}`);
+// ------------------------------------------------------------------ start / login
 
-  const tree = [];
-  for (const f of files) {
-    const bytes = f.bytes ?? new TextEncoder().encode(f.text);
-    const blob = await gh("/git/blobs", { method: "POST", body: JSON.stringify({ content: toBase64(bytes), encoding: "base64" }) });
-    tree.push({ path: f.path, mode: "100644", type: "blob", sha: blob.sha });
-  }
-  for (const path of deletes) tree.push({ path, mode: "100644", type: "blob", sha: null });
+function showLogin(message = "") {
+  $("app").hidden = true;
+  $("login").hidden = false;
+  $("login-message").textContent = message;
+  $("login-message").className = message ? "form-message error" : "form-message";
+  if ($("editor").open) $("editor").close();
+}
 
-  const newTree = await gh("/git/trees", { method: "POST", body: JSON.stringify({ base_tree: base.tree.sha, tree }) });
-  const commit = await gh("/git/commits", {
-    method: "POST",
-    body: JSON.stringify({ message, tree: newTree.sha, parents: [head] }),
-  });
+async function start() {
+  let session;
   try {
-    await gh(`/git/refs/heads/${BRANCH}`, { method: "PATCH", body: JSON.stringify({ sha: commit.sha }) });
-  } catch (err) {
-    if (err.status === 422 && attempt === 0) return commitFiles(message, files, deletes, 1); // branch moved on
-    throw err;
+    const res = await fetch("api/session", { credentials: "same-origin" });
+    session = await res.json();
+  } catch {
+    $("no-server").hidden = false;
+    return;
   }
-  return commit.sha;
+  if (!session.loggedIn) return showLogin();
+  await openDashboard();
 }
 
-// ------------------------------------------------------------------ sign in
-
-async function signIn(candidate, remember) {
-  token = candidate;
-  const repo = await gh("");
-  if (!repo.permissions?.push) {
-    token = null;
-    throw new Error("This token can read the menu but not change it. Give it Contents: Read and write.");
-  }
-  store.set(candidate, remember);
-  $("sign-in-panel").hidden = true;
-  $("admin-main").hidden = false;
-  $("sign-out").hidden = false;
-  $("repo-line").textContent = `Publishing to github.com/${REPO} · the live menu updates about a minute after each change.`;
-  menu = await loadMenuFromRepo();
-  renderDishes();
+async function openDashboard() {
+  $("login").hidden = true;
+  $("app").hidden = false;
+  await reloadMenu();
 }
 
-$("sign-in-form").addEventListener("submit", async (e) => {
+$("login-form").addEventListener("submit", async (e) => {
   e.preventDefault();
-  const msg = $("sign-in-message");
-  msg.textContent = "Checking…";
-  msg.className = "form-message";
+  $("login-button").disabled = true;
+  $("login-message").textContent = "";
   try {
-    await signIn($("token").value.trim(), $("remember").checked);
-    msg.textContent = "";
-  } catch (err) {
-    msg.className = "form-message error";
-    msg.textContent = err.status === 401
-      ? "That token isn't valid (or has expired). Create a new one and try again."
-      : err.status === 404
-        ? `This token has no access to github.com/${REPO}. Give it access to that repository.`
-        : err.message;
-  }
-});
-
-$("sign-out").addEventListener("click", () => {
-  session.clear(); // the GitHub token stays remembered on this device, if it was saved
-  location.reload();
-});
-
-$("login-form").addEventListener("submit", (e) => {
-  e.preventDefault();
-  const ok = $("username").value.trim() === ADMIN_USERNAME && $("password").value === ADMIN_PASSWORD;
-  if (!ok) {
-    $("login-message").className = "form-message error";
-    $("login-message").textContent = "Wrong username or password.";
+    await api("POST", "login", { username: $("username").value.trim(), password: $("password").value });
     $("password").value = "";
-    return;
+    await openDashboard();
+  } catch (err) {
+    $("login-message").className = "form-message error";
+    $("login-message").textContent = err.message;
+  } finally {
+    $("login-button").disabled = false;
   }
-  session.set();
-  afterLogin();
 });
 
-/** Logged in: use the remembered GitHub token, or ask for it once on this device. */
-function afterLogin() {
-  $("login-panel").hidden = true;
-  $("sign-out").hidden = false;
-  const saved = store.get();
-  if (!saved) {
-    $("sign-in-panel").hidden = false;
-    return;
-  }
-  signIn(saved, true).catch(() => {
-    store.clear();
-    token = null;
-    $("sign-in-panel").hidden = false;
-    $("sign-in-message").className = "form-message error";
-    $("sign-in-message").textContent = "The saved GitHub token no longer works. Paste a new one.";
-  });
+$("logout").addEventListener("click", async () => {
+  await api("POST", "logout").catch(() => {});
+  showLogin();
+});
+
+// ------------------------------------------------------------------ navigation
+
+function setView(name) {
+  view = ["items", "categories", "settings"].includes(name) ? name : "items";
+  for (const v of ["items", "categories", "settings"]) $(`view-${v}`).hidden = v !== view;
+  document.querySelectorAll(".sidebar nav a").forEach((a) => a.classList.toggle("active", a.dataset.view === view));
+  if (menu) render();
+}
+window.addEventListener("hashchange", () => setView(location.hash.slice(1)));
+setView(location.hash.slice(1));
+
+function render() {
+  if (view === "items") renderItems();
+  if (view === "categories") renderCategories();
+  if (view === "settings") renderSettings();
 }
 
-$("repo-name-help").textContent = REPO;
-
-// ------------------------------------------------------------------ dish list
-
-const allDishes = () => menu.categories.flatMap((c) => c.dishes.map((d) => ({ dish: d, category: c })));
 const money = (p) => `${menu.restaurant.currency}${Number(p).toFixed(2)}`;
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 
-function renderDishes() {
-  const wrap = $("dishes");
-  wrap.innerHTML = "";
+// ------------------------------------------------------------------ menu items
+
+function renderItems() {
+  const filterSelect = $("filter-category");
+  const chosen = filterSelect.value || "all";
+  filterSelect.innerHTML = `<option value="all">All categories</option>` +
+    menu.categories.map((c) => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join("");
+  filterSelect.value = menu.categories.some((c) => c.id === chosen) ? chosen : "all";
+
+  const query = $("search").value.trim().toLowerCase();
+  const status = $("filter-status").value;
+  const total = menu.categories.reduce((n, c) => n + c.dishes.length, 0);
+  const soldOut = menu.categories.reduce((n, c) => n + c.dishes.filter((d) => d.available === false).length, 0);
+  $("items-summary").textContent = `${total} item${total === 1 ? "" : "s"} in ${menu.categories.length} categor${menu.categories.length === 1 ? "y" : "ies"}${soldOut ? ` · ${soldOut} sold out` : ""}`;
+
+  const list = $("items-list");
+  list.innerHTML = "";
+  let shown = 0;
   for (const category of menu.categories) {
-    const h = document.createElement("h3");
-    h.textContent = category.name;
-    wrap.append(h);
-    if (!category.dishes.length) {
-      const p = document.createElement("p");
-      p.className = "hint";
-      p.textContent = "No dishes yet.";
-      wrap.append(p);
-    }
-    for (const dish of category.dishes) {
-      const row = document.createElement("button");
-      row.type = "button";
-      row.className = "dish-row";
-      row.innerHTML = `<img alt="" src="${repoFile(dish.image)}?v=${dish.updated || 0}"><span><strong></strong><small></small></span><em></em>`;
-      row.querySelector("strong").textContent = dish.name;
-      row.querySelector("small").textContent = dish.size || "";
-      row.querySelector("em").textContent = money(dish.price);
-      row.addEventListener("click", () => openEditor(dish, category.id));
-      wrap.append(row);
-    }
+    if (filterSelect.value !== "all" && category.id !== filterSelect.value) continue;
+    const dishes = category.dishes.filter((d) => {
+      if (query && !`${d.name} ${d.description} ${(d.tags || []).join(" ")}`.toLowerCase().includes(query)) return false;
+      if (status === "available" && d.available === false) return false;
+      if (status === "soldout" && d.available !== false) return false;
+      if (status === "no3d" && d.model) return false;
+      return true;
+    });
+    if (!dishes.length && (query || status !== "all")) continue;
+
+    const group = document.createElement("section");
+    group.className = "item-group";
+    group.innerHTML = `<h2>${esc(category.name)} <span>${category.dishes.length}</span></h2>`;
+    if (!dishes.length) group.insertAdjacentHTML("beforeend", `<p class="empty">No items yet. Use <strong>+ New item</strong> to add one.</p>`);
+
+    dishes.forEach((dish) => {
+      shown++;
+      const index = category.dishes.indexOf(dish);
+      const row = document.createElement("div");
+      row.className = `item-row${dish.available === false ? " sold-out" : ""}`;
+      row.innerHTML = `
+        <button class="item-main" type="button" aria-label="Edit ${esc(dish.name)}">
+          <span class="thumb">${dish.image ? `<img src="${esc(dish.image)}" alt="" loading="lazy">` : ""}</span>
+          <span class="item-text">
+            <strong>${esc(dish.name)}</strong>
+            <small>${esc(dish.description || "No description")}</small>
+            <span class="badges">${dish.model ? `<span class="badge three">3D</span>` : `<span class="badge none">No 3D</span>`}${(dish.tags || []).map((t) => `<span class="badge">${esc(t)}</span>`).join("")}</span>
+          </span>
+        </button>
+        <span class="item-price">${money(dish.price)}</span>
+        <label class="avail" title="Available">
+          <input type="checkbox" class="switch" ${dish.available === false ? "" : "checked"} aria-label="${esc(dish.name)} available">
+          <span>${dish.available === false ? "Sold out" : "Available"}</span>
+        </label>
+        <span class="order">
+          <button class="icon-button" type="button" data-move="-1" aria-label="Move up" ${index === 0 ? "disabled" : ""}>↑</button>
+          <button class="icon-button" type="button" data-move="1" aria-label="Move down" ${index === category.dishes.length - 1 ? "disabled" : ""}>↓</button>
+        </span>`;
+      row.querySelector(".item-main").addEventListener("click", () => openEditor(dish, category.id));
+      row.querySelector(".switch").addEventListener("change", async (e) => {
+        const available = e.target.checked;
+        try {
+          await api("PUT", `dishes/${dish.id}`, { available });
+          toast(available ? `${dish.name} is available` : `${dish.name} marked sold out`);
+        } catch (err) {
+          toast(err.message, true);
+        }
+        await reloadMenu();
+      });
+      row.querySelectorAll("[data-move]").forEach((b) => b.addEventListener("click", async () => {
+        await api("POST", `dishes/${dish.id}/move`, { direction: Number(b.dataset.move) }).catch((err) => toast(err.message, true));
+        await reloadMenu();
+      }));
+      group.append(row);
+    });
+    list.append(group);
   }
+  if (!shown && (query || status !== "all")) list.innerHTML = `<p class="empty">No items match. Try another search or filter.</p>`;
 }
 
-$("add-dish").addEventListener("click", () => openEditor(null, menu.categories[0]?.id));
-
-// ------------------------------------------------------------------ editor
-
-function fillCategories(selectedId) {
-  const select = $("f-category");
-  select.innerHTML = "";
-  for (const c of menu.categories) select.add(new Option(c.name, c.id, false, c.id === selectedId));
-  select.add(new Option("+ New category…", "__new"));
-  $("new-category-field").hidden = select.value !== "__new";
-}
-
-$("f-category").addEventListener("change", () => {
-  $("new-category-field").hidden = $("f-category").value !== "__new";
+$("search").addEventListener("input", renderItems);
+$("filter-category").addEventListener("change", renderItems);
+$("filter-status").addEventListener("change", renderItems);
+$("new-item").addEventListener("click", () => {
+  if (!menu.categories.length) {
+    toast("Add a category first.", true);
+    location.hash = "#categories";
+    return;
+  }
+  const filter = $("filter-category").value;
+  openEditor(null, filter !== "all" ? filter : menu.categories[0].id);
 });
+
+// ------------------------------------------------------------------ item editor
 
 function openEditor(dish, categoryId) {
-  editing = dish ? { dish, categoryId } : null;
-  prepared = null;
-  $("editor").hidden = false;
-  $("editor-title").textContent = dish ? `Edit ${dish.name}` : "Add dish";
-  $("delete-dish").hidden = !dish;
-  resetDeleteButton();
-  fillCategories(categoryId);
+  editing = dish;
+  modelFile = null;
+  photoFile = null;
+  preparedModel = null;
+  $("editor-title").textContent = dish ? "Edit item" : "New item";
+  $("f-category").innerHTML = menu.categories.map((c) => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join("");
+  $("f-category").value = categoryId;
   $("f-name").value = dish?.name ?? "";
   $("f-price").value = dish?.price ?? "";
   $("f-description").value = dish?.description ?? "";
   $("f-tags").value = (dish?.tags ?? []).join(", ");
+  $("f-available").checked = dish ? dish.available !== false : true;
   $("f-scanned").checked = !!dish?.scanned;
   $("f-width").value = dish?.widthCm ?? 26;
   $("f-model").value = "";
-  $("f-model").required = !dish;
-  $("model-hint").textContent = dish
-    ? "Leave empty to keep the current model, or choose a new .glb to replace it."
-    : "From KIRI Engine, Polycam, Sketchfab… export as GLB. For OBJ scans, convert with the dish scanner first.";
-  $("form-message").textContent = "";
-  $("form-message").className = "form-message";
-  showPreview(dish ? `${repoFile(dish.model)}?v=${dish.updated || 0}` : null, dish?.size);
-  $("editor").scrollIntoView({ behavior: "smooth", block: "start" });
+  $("f-photo").value = "";
+  $("delete-item").hidden = !dish;
+  resetDelete();
+  setFormMessage("");
+  showModel(dish?.model ?? null, dish?.size ? `Real size: ${dish.size}` : null);
+  showPhoto(dish?.image ?? null);
+  $("editor").showModal();
+  $("f-name").focus();
 }
 
-$("cancel-edit").addEventListener("click", () => {
-  $("editor").hidden = true;
+function closeEditor() {
+  if ($("editor").open) $("editor").close();
   editing = null;
-});
+}
+$("editor-close").addEventListener("click", closeEditor);
+$("editor").addEventListener("cancel", (e) => { e.preventDefault(); closeEditor(); });
 
-function showPreview(src, info) {
-  const viewer = $("admin-viewer");
+function showModel(src, info) {
+  const viewer = $("viewer");
   if (src) viewer.src = src;
   else viewer.removeAttribute("src");
-  $("model-info").textContent = info ? `Real size: ${info}` : "Choose a model to preview it at real size.";
+  viewer.classList.toggle("empty", !src);
+  $("model-info").textContent = info || (src ? "" : "No 3D model yet. Guests will see the photo only.");
 }
 
-// ------------------------------------------------------------------ model processing (in the browser)
+function showPhoto(src) {
+  $("photo-preview").hidden = !src;
+  if (src) $("photo-preview").src = src;
+}
 
-/**
- * Scale a GLB to the given real width, stand it on y = 0 and centre it, then export it again as GLB.
- * Baking the size into the file means every AR viewer (and the camera view) shows it at real size.
- */
+function setFormMessage(text, isError = false) {
+  $("form-message").textContent = text;
+  $("form-message").className = `form-message${isError ? " error" : ""}`;
+}
+
+$("f-model").addEventListener("change", () => prepareChosenModel());
+$("f-width").addEventListener("change", () => {
+  if (modelFile || editing?.model) prepareChosenModel();
+});
+
+$("f-photo").addEventListener("change", () => {
+  photoFile = $("f-photo").files[0] || null;
+  if (photoFile) showPhoto(URL.createObjectURL(photoFile));
+});
+
+async function prepareChosenModel() {
+  modelFile = $("f-model").files[0] || null;
+  const widthCm = Number($("f-width").value);
+  if (!(widthCm >= 3)) return setFormMessage("Enter the real width in cm.", true);
+  try {
+    let buffer;
+    if (modelFile) {
+      if (modelFile.size > MAX_UPLOAD_MB * 1048576) throw new Error(`This file is ${Math.round(modelFile.size / 1048576)} MB. Keep models under ${MAX_UPLOAD_MB} MB (ideally under 5 MB).`);
+      buffer = await modelFile.arrayBuffer();
+    } else if (editing?.model) {
+      buffer = await fetch(editing.model).then((r) => r.arrayBuffer()); // same model, new width
+    } else {
+      return;
+    }
+    setFormMessage("Preparing the 3D model…");
+    preparedModel = await prepareModel(buffer, widthCm);
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    previewUrl = URL.createObjectURL(new Blob([preparedModel.glb], { type: "model/gltf-binary" }));
+    showModel(previewUrl, `Real size: ${sizeLabel(preparedModel)}`);
+    const mb = preparedModel.glb.byteLength / 1048576;
+    setFormMessage(mb > 6 ? `The model is ${mb.toFixed(1)} MB, which may load slowly on phones.` : "");
+  } catch (err) {
+    preparedModel = null;
+    setFormMessage(err.message, true);
+  }
+}
+
+const sizeLabel = (m) => `${Math.round(m.width)} cm wide · ${m.height.toFixed(1)} cm tall`;
+
+/** Scale to the real width, stand on y = 0, centre, and export again as GLB (so every AR viewer shows real size). */
 async function prepareModel(arrayBuffer, widthCm) {
   let gltf;
   try {
@@ -296,7 +326,7 @@ async function prepareModel(arrayBuffer, widthCm) {
   } catch (err) {
     if (/draco/i.test(String(err))) throw new Error("This model uses Draco compression. Export it again without compression.");
     if (/ktx|basis/i.test(String(err))) throw new Error("This model uses KTX2 textures. Export it again with PNG or JPEG textures.");
-    throw new Error("Couldn't read this file as a 3D model (GLB/glTF).");
+    throw new Error("Couldn't read this file as a GLB 3D model.");
   }
   const root = gltf.scene;
   root.updateMatrixWorld(true);
@@ -309,36 +339,31 @@ async function prepareModel(arrayBuffer, widthCm) {
   centre.add(root);
   centre.position.set(-(box.min.x + box.max.x) / 2, -box.min.y, -(box.min.z + box.max.z) / 2);
   const dish = new THREE.Group();
-  dish.name = "dish";
   dish.add(centre);
   dish.scale.setScalar(scale);
   dish.updateMatrixWorld(true);
 
   const glb = await new GLTFExporter().parseAsync(dish, { binary: true, animations: gltf.animations });
-  const real = size.clone().multiplyScalar(scale * 100);
   const png = await renderThumbnail(dish);
-  return { glb, png, width: real.x, height: real.y, depth: real.z };
+  return { glb, png, width: size.x * scale * 100, height: size.y * scale * 100 };
 }
 
-/** Card picture: the dish from the front and a little above, on a transparent background. */
 function renderThumbnail(object) {
-  const sizePx = 512;
+  const px = 512;
   const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true, preserveDrawingBuffer: true });
-  renderer.setSize(sizePx, sizePx);
+  renderer.setSize(px, px);
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.NeutralToneMapping;
   const scene = new THREE.Scene();
   scene.add(new THREE.HemisphereLight(0xffffff, 0x8a7a66, 2.4));
   const sun = new THREE.DirectionalLight(0xffffff, 1.8);
   sun.position.set(0.4, 1, -0.6);
-  scene.add(sun);
-  scene.add(object);
-
+  scene.add(sun, object);
   const box = new THREE.Box3().setFromObject(object);
   const centre = box.getCenter(new THREE.Vector3());
   const radius = box.getSize(new THREE.Vector3()).length() / 2;
   const camera = new THREE.PerspectiveCamera(32, 1, radius / 50, radius * 20);
-  camera.position.copy(centre).add(new THREE.Vector3(0, radius * 1.0, -radius * 1.9).multiplyScalar(1.15));
+  camera.position.copy(centre).add(new THREE.Vector3(0, radius, -radius * 1.9).multiplyScalar(1.15));
   camera.lookAt(centre);
   renderer.render(scene, camera);
   return new Promise((resolve) => renderer.domElement.toBlob(async (blob) => {
@@ -348,183 +373,169 @@ function renderThumbnail(object) {
   }, "image/png"));
 }
 
-const sizeLabel = (p) => `${Math.round(p.width)} cm wide · ${p.height.toFixed(1)} cm tall`;
-
-async function processChosenModel() {
-  const file = $("f-model").files[0];
-  const widthCm = Number($("f-width").value);
-  if (!(widthCm >= 3)) return;
-  let buffer;
-  if (file) {
-    if (file.size > MAX_MODEL_MB * 1024 * 1024) throw new Error(`This file is ${Math.round(file.size / 1048576)} MB. Keep models under ${MAX_MODEL_MB} MB (aim for under 5 MB so they load fast on phones).`);
-    buffer = await file.arrayBuffer();
-  } else if (editing) {
-    // Same model, new width: rescale the current one.
-    buffer = await fetch(`${repoFile(editing.dish.model)}?v=${Date.now()}`).then((r) => r.arrayBuffer());
-  } else {
-    return;
-  }
-  setMessage("Preparing the model…");
-  prepared = await prepareModel(buffer, widthCm);
-  if (previewUrl) URL.revokeObjectURL(previewUrl);
-  previewUrl = URL.createObjectURL(new Blob([prepared.glb], { type: "model/gltf-binary" }));
-  showPreview(previewUrl, sizeLabel(prepared));
-  const mb = prepared.glb.byteLength / 1048576;
-  setMessage(mb > 6 ? `Ready. The model is ${mb.toFixed(1)} MB, which may load slowly on mobile data.` : "Model ready.");
-}
-
-async function onModelInput() {
-  try {
-    await processChosenModel();
-  } catch (err) {
-    prepared = null;
-    setMessage(err.message, true);
-  }
-}
-$("f-model").addEventListener("change", onModelInput);
-$("f-width").addEventListener("change", () => {
-  if ($("f-model").files[0] || editing) onModelInput();
-});
-
-function setMessage(text, isError = false, isOk = false) {
-  const el = $("form-message");
-  el.textContent = text;
-  el.className = `form-message${isError ? " error" : ""}${isOk ? " ok" : ""}`;
-}
-
-// ------------------------------------------------------------------ save / delete
-
-const slug = (s) => s.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "dish";
-
-function uniqueId(base, taken) {
-  let id = base;
-  for (let n = 2; taken.has(id); n++) id = `${base}-${n}`;
-  return id;
-}
-
-$("dish-form").addEventListener("submit", async (e) => {
+$("item-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const name = $("f-name").value.trim();
-  const price = Number($("f-price").value);
-  const widthCm = Number($("f-width").value);
-  let categoryId = $("f-category").value;
-  const newCategory = $("f-new-category").value.trim();
+  const priceText = $("f-price").value;
+  if (!name) return setFormMessage("Give the item a name.", true);
+  if (priceText === "" || !(Number(priceText) >= 0)) return setFormMessage("Enter a price.", true);
 
-  if (!name) return setMessage("Give the dish a name.", true);
-  if (!(price >= 0) || $("f-price").value === "") return setMessage("Enter a price.", true);
-  if (categoryId === "__new" && !newCategory) return setMessage("Name the new category.", true);
-  if (!editing && !$("f-model").files[0]) return setMessage("Choose the dish's 3D model (.glb).", true);
-  if (!(widthCm >= 3)) return setMessage("Enter the dish's real width in cm.", true);
-
-  const save = $("save-dish");
+  const save = $("save-item");
   save.disabled = true;
   try {
-    // Model needs (re)processing if a new file was chosen or the width changed.
-    const widthChanged = editing && Number(editing.dish.widthCm ?? 26) !== widthCm;
-    if (!prepared && ($("f-model").files[0] || widthChanged)) await processChosenModel();
+    const widthCm = Number($("f-width").value) || 26;
+    const widthChanged = editing?.model && Number(editing.widthCm ?? 26) !== widthCm;
+    if (!preparedModel && ($("f-model").files[0] || widthChanged)) await prepareChosenModel();
+    if ($("f-model").files[0] && !preparedModel) throw new Error($("form-message").textContent || "The 3D model couldn't be prepared.");
 
-    setMessage("Loading the latest menu…");
-    menu = await loadMenuFromRepo(); // don't overwrite someone else's change
-
-    if (categoryId === "__new") {
-      categoryId = uniqueId(slug(newCategory), new Set(menu.categories.map((c) => c.id)));
-      menu.categories.push({ id: categoryId, name: newCategory, dishes: [] });
-    }
-    const category = menu.categories.find((c) => c.id === categoryId);
-    const takenIds = new Set(allDishes().map((x) => x.dish.id));
-
-    let dish;
-    if (editing) {
-      // Find the dish again in the freshly loaded menu and take it out of its old category.
-      for (const c of menu.categories) {
-        const i = c.dishes.findIndex((d) => d.id === editing.dish.id);
-        if (i >= 0) [dish] = c.dishes.splice(i, 1);
-      }
-      if (!dish) throw new Error("This dish was deleted by someone else meanwhile. Reload the page.");
-    } else {
-      const id = uniqueId(slug(name), takenIds);
-      dish = { id, model: `models/${id}.glb`, image: `images/${id}.png` };
-    }
-
-    Object.assign(dish, {
+    const fields = {
       name,
+      categoryId: $("f-category").value,
+      price: Number(priceText),
       description: $("f-description").value.trim(),
-      price: Math.round(price * 100) / 100,
       tags: $("f-tags").value.split(",").map((t) => t.trim()).filter(Boolean),
+      available: $("f-available").checked,
       scanned: $("f-scanned").checked,
       widthCm,
-      updated: Date.now(),
-    });
-    const files = [];
-    if (prepared) {
-      // New files for a replaced model, so phones don't keep showing a cached old one.
-      dish.model = `models/${dish.id}-${dish.updated}.glb`;
-      dish.image = `images/${dish.id}-${dish.updated}.png`;
-      dish.size = sizeLabel(prepared);
-      files.push({ path: dish.model, bytes: prepared.glb }, { path: dish.image, bytes: prepared.png });
-    }
-    category.dishes.push(dish);
-    files.push({ path: "data/menu.json", text: JSON.stringify(menu, null, 2) + "\n" });
+    };
 
-    // Old model/picture files that nothing uses any more.
-    const deletes = [];
-    if (editing && prepared) {
-      const used = new Set(allDishes().flatMap(({ dish: d }) => [d.model, d.image]));
-      for (const old of [editing.dish.model, editing.dish.image]) if (old && !used.has(old)) deletes.push(old);
+    const slugName = name.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+    if (preparedModel) {
+      setFormMessage("Uploading the 3D model…");
+      fields.model = await upload("model", slugName, preparedModel.glb);
+      fields.size = sizeLabel(preparedModel);
+    }
+    if (photoFile) {
+      setFormMessage("Uploading the photo…");
+      fields.image = await upload("image", slugName, new Uint8Array(await photoFile.arrayBuffer()));
+      fields.photo = true;
+    } else if (preparedModel && !editing?.photo) {
+      // No photo of their own: the menu card uses a picture rendered from the 3D model.
+      fields.image = await upload("image", slugName, preparedModel.png);
+      fields.photo = false;
     }
 
-    setMessage("Publishing…");
-    await commitFiles(`${editing ? "Update" : "Add"} ${name}`, files, deletes);
-    renderDishes();
-    editing = { dish, categoryId };
-    prepared = null;
-    $("f-model").value = "";
-    $("editor-title").textContent = `Edit ${dish.name}`;
-    $("delete-dish").hidden = false;
-    setMessage("Published. The live menu shows it in about a minute.", false, true);
+    setFormMessage("Saving…");
+    if (editing) await api("PUT", `dishes/${editing.id}`, fields);
+    else await api("POST", "dishes", fields);
+    closeEditor();
+    toast(`${name} saved`);
+    await reloadMenu();
   } catch (err) {
-    console.error(err);
-    setMessage(err.status === 401 ? "The GitHub token stopped working. Log out, log in again and connect a new token." : `Not published: ${err.message}`, true);
+    setFormMessage(err.message, true);
   } finally {
     save.disabled = false;
   }
 });
 
-// Delete needs a second tap to confirm.
+// Delete: second tap confirms.
 let deleteArmed = false;
-function resetDeleteButton() {
+function resetDelete() {
   deleteArmed = false;
-  $("delete-dish").textContent = "Delete dish";
+  $("delete-item").textContent = "Delete";
 }
-$("delete-dish").addEventListener("click", async () => {
+$("delete-item").addEventListener("click", async () => {
   if (!editing) return;
   if (!deleteArmed) {
     deleteArmed = true;
-    $("delete-dish").textContent = `Tap again to delete ${editing.dish.name}`;
-    setTimeout(resetDeleteButton, 4000);
+    $("delete-item").textContent = "Tap again to delete";
+    setTimeout(resetDelete, 4000);
     return;
   }
-  resetDeleteButton();
+  const name = editing.name;
   try {
-    setMessage("Deleting…");
-    menu = await loadMenuFromRepo();
-    let removed = null;
-    for (const c of menu.categories) {
-      const i = c.dishes.findIndex((d) => d.id === editing.dish.id);
-      if (i >= 0) [removed] = c.dishes.splice(i, 1);
-    }
-    if (!removed) throw new Error("It was already deleted.");
-    const used = new Set(allDishes().flatMap(({ dish: d }) => [d.model, d.image]));
-    const deletes = [removed.model, removed.image].filter((p) => p && !used.has(p));
-    await commitFiles(`Remove ${removed.name}`, [{ path: "data/menu.json", text: JSON.stringify(menu, null, 2) + "\n" }], deletes);
-    $("editor").hidden = true;
-    editing = null;
-    renderDishes();
+    await api("DELETE", `dishes/${editing.id}`);
+    closeEditor();
+    toast(`${name} deleted`);
+    await reloadMenu();
   } catch (err) {
-    setMessage(`Not deleted: ${err.message}`, true);
+    setFormMessage(err.message, true);
   }
 });
 
-// ------------------------------------------------------------------ start
+// ------------------------------------------------------------------ categories
 
-if (session.loggedIn()) afterLogin();
+function renderCategories() {
+  const list = $("categories-list");
+  list.innerHTML = "";
+  if (!menu.categories.length) list.innerHTML = `<p class="empty">No categories yet. Add the first one above.</p>`;
+  menu.categories.forEach((category, i) => {
+    const row = document.createElement("form");
+    row.className = "category-row";
+    row.innerHTML = `
+      <input value="${esc(category.name)}" maxlength="40" aria-label="Category name">
+      <span class="count">${category.dishes.length} item${category.dishes.length === 1 ? "" : "s"}</span>
+      <button class="secondary" type="submit">Rename</button>
+      <span class="order">
+        <button class="icon-button" type="button" data-move="-1" aria-label="Move up" ${i === 0 ? "disabled" : ""}>↑</button>
+        <button class="icon-button" type="button" data-move="1" aria-label="Move down" ${i === menu.categories.length - 1 ? "disabled" : ""}>↓</button>
+      </span>
+      <button class="danger small" type="button" data-delete ${category.dishes.length ? "disabled title=\"Move or delete its items first\"" : ""}>Delete</button>`;
+    row.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      try {
+        await api("PUT", `categories/${category.id}`, { name: row.querySelector("input").value });
+        toast("Category renamed");
+      } catch (err) {
+        toast(err.message, true);
+      }
+      await reloadMenu();
+    });
+    row.querySelectorAll("[data-move]").forEach((b) => b.addEventListener("click", async () => {
+      await api("POST", `categories/${category.id}/move`, { direction: Number(b.dataset.move) }).catch((err) => toast(err.message, true));
+      await reloadMenu();
+    }));
+    row.querySelector("[data-delete]").addEventListener("click", async (e) => {
+      const btn = e.currentTarget;
+      if (btn.dataset.armed !== "1") {
+        btn.dataset.armed = "1";
+        btn.textContent = "Tap again";
+        setTimeout(() => { btn.dataset.armed = ""; btn.textContent = "Delete"; }, 4000);
+        return;
+      }
+      try {
+        await api("DELETE", `categories/${category.id}`);
+        toast(`${category.name} deleted`);
+      } catch (err) {
+        toast(err.message, true);
+      }
+      await reloadMenu();
+    });
+    list.append(row);
+  });
+}
+
+$("new-category-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const name = $("new-category-name").value.trim();
+  if (!name) return;
+  try {
+    await api("POST", "categories", { name });
+    $("new-category-name").value = "";
+    toast(`${name} added`);
+  } catch (err) {
+    toast(err.message, true);
+  }
+  await reloadMenu();
+});
+
+// ------------------------------------------------------------------ settings
+
+function renderSettings() {
+  $("s-name").value = menu.restaurant.name;
+  $("s-tagline").value = menu.restaurant.tagline || "";
+  $("s-currency").value = menu.restaurant.currency;
+}
+
+$("settings-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  try {
+    await api("PUT", "settings", { name: $("s-name").value, tagline: $("s-tagline").value, currency: $("s-currency").value });
+    toast("Settings saved");
+  } catch (err) {
+    toast(err.message, true);
+  }
+  await reloadMenu();
+});
+
+start();

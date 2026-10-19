@@ -33,12 +33,16 @@ const viewer = $("viewer");
 
 // ------------------------------------------------------------------ menu list
 
+// Menu text comes from the admin, so escape it before putting it into the page.
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+
 function renderMenu() {
   document.title = RESTAURANT.name;
   $("restaurant-name").textContent = RESTAURANT.name;
   $("restaurant-tagline").textContent = RESTAURANT.tagline;
 
   for (const category of CATEGORIES) {
+    if (!category.dishes.length) continue; // empty categories don't show on the menu
     const tab = document.createElement("a");
     tab.href = `#${category.id}`;
     tab.textContent = category.name;
@@ -46,30 +50,35 @@ function renderMenu() {
 
     const section = document.createElement("section");
     section.id = category.id;
-    section.innerHTML = `<h2 class="category">${category.name}</h2>`;
+    section.innerHTML = `<h2 class="category">${esc(category.name)}</h2>`;
     const list = document.createElement("div");
     list.className = "cards";
 
     for (const dish of category.dishes) {
+      const soldOut = dish.available === false;
       const card = document.createElement("article");
-      card.className = "card";
+      card.className = `card${soldOut ? " sold-out" : ""}`;
+      const tags = [
+        ...(soldOut ? [`<span class="tag sold">Sold out</span>`] : []),
+        ...(dish.tags || []).map((t) => `<span class="tag${dish.scanned && /scan/i.test(t) ? " scan" : ""}">${esc(t)}</span>`),
+      ];
       card.innerHTML = `
-        <div class="card-image"><img src="${dish.image}" alt="${dish.name}" loading="lazy"></div>
+        <div class="card-image">${dish.image ? `<img src="${esc(dish.image)}" alt="${esc(dish.name)}" loading="lazy">` : ""}</div>
         <div class="card-body">
           <div class="card-head">
-            <h3>${dish.name}</h3>
+            <h3>${esc(dish.name)}</h3>
             <span class="price">${price(dish.price)}</span>
           </div>
-          <p>${dish.description}</p>
+          <p>${esc(dish.description)}</p>
           <div class="card-foot">
-            <div class="tags">${(dish.tags || []).map((t) => `<span class="tag${dish.scanned && t.includes("scan") ? " scan" : ""}">${t}</span>`).join("")}</div>
-            <button class="preview-button" type="button">
-              <span class="ar-icon" aria-hidden="true"></span> Preview
-            </button>
+            <div class="tags">${tags.join("")}</div>
+            ${dish.model ? `<button class="preview-button" type="button"><span class="ar-icon" aria-hidden="true"></span> Preview</button>` : ""}
           </div>
         </div>`;
-      card.querySelector(".preview-button").addEventListener("click", () => openPreview(dish));
-      card.querySelector(".card-image").addEventListener("click", () => openPreview(dish));
+      if (dish.model) {
+        card.querySelector(".preview-button").addEventListener("click", () => openPreview(dish));
+        card.querySelector(".card-image").addEventListener("click", () => openPreview(dish));
+      }
       list.append(card);
     }
     section.append(list);
@@ -86,7 +95,7 @@ function openPreview(dish, push = true) {
   $("preview-name").textContent = dish.name;
   $("preview-price").textContent = price(dish.price);
   $("preview-desc").textContent = dish.description;
-  $("preview-size").textContent = `Real size: ${dish.size}${dish.scanned ? " · 3D-scanned from the real dish" : ""}`;
+  $("preview-size").textContent = [dish.size ? `Real size: ${dish.size}` : "", dish.scanned ? "3D-scanned from the real dish" : "", dish.available === false ? "Sold out today" : ""].filter(Boolean).join(" · ");
   $("no-ar").hidden = true;
   $("ar-tip").hidden = true;
 
@@ -170,7 +179,7 @@ document.querySelectorAll(".menu section").forEach((s) => observer.observe(s));
 function openFromLink() {
   const linked = location.hash.match(/^#dish-(.+)$/);
   const dish = linked && CATEGORIES.flatMap((c) => c.dishes).find((d) => d.id === linked[1]);
-  if (!dish) return;
+  if (!dish?.model) return; // no 3D model to show
   // Put the plain menu underneath, so "back" / close returns to it.
   history.replaceState(null, "", location.pathname);
   openPreview(dish);

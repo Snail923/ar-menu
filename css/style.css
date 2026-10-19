@@ -415,3 +415,8 @@ html.camera-open, html.camera-open body { overflow: hidden; }
 }
 
 .cv-place { background: var(--accent); color: var(--accent-ink); }
+
+/* ---------------------------------------------------------------- sold out */
+
+.card.sold-out .card-image, .card.sold-out h3, .card.sold-out .price { opacity: 0.55; }
+.tag.sold { background: color-mix(in srgb, #d64545 16%, transparent); color: #d64545; }

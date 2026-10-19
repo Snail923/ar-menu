@@ -14,123 +14,185 @@
   <script type="module" src="js/admin.js"></script>
 </head>
 <body class="admin">
-  <header class="admin-top">
-    <div>
-      <h1>Menu admin</h1>
-      <p id="repo-line">Changes are published to the live menu.</p>
-    </div>
-    <div class="admin-top-actions">
-      <a href="./" target="_blank" rel="noopener">Open live menu ↗</a>
-      <button class="link-button" id="sign-out" type="button" hidden>Log out</button>
-    </div>
-  </header>
 
-  <!-- Step 1: admin login -->
-  <section class="panel sign-in" id="login-panel">
-    <h2>Admin login</h2>
+  <!-- Shown when the page isn't served by the menu server (e.g. a static-only host) -->
+  <section class="center-card" id="no-server" hidden>
+    <h1>Menu admin</h1>
+    <p>The admin needs the menu server, and it isn't running at this address.</p>
+    <p>Start it in the <code>web</code> folder with <code>node server/server.js</code> and open <code>/admin.html</code> on that server.</p>
+  </section>
+
+  <!-- Login -->
+  <section class="center-card" id="login" hidden>
+    <h1>Menu admin</h1>
+    <p>Log in to edit the menu.</p>
     <form id="login-form">
       <label for="username">Username</label>
       <input id="username" autocomplete="username" spellcheck="false" required>
       <label for="password">Password</label>
       <input id="password" type="password" autocomplete="current-password" required>
-      <button class="primary" type="submit">Log in</button>
+      <button class="primary" type="submit" id="login-button">Log in</button>
       <p class="form-message" id="login-message" role="status"></p>
     </form>
   </section>
 
-  <!-- Step 2 (once per device): connect publishing with a GitHub token that can write to the menu's repository -->
-  <section class="panel sign-in" id="sign-in-panel" hidden>
-    <h2>Connect publishing</h2>
-    <p>One time on this device: paste the <strong>GitHub access token</strong> for the menu's repository. The menu is saved there.</p>
-    <form id="sign-in-form">
-      <label for="token">GitHub access token</label>
-      <input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="github_pat_…" required>
-      <label class="check"><input id="remember" type="checkbox" checked> Remember on this device</label>
-      <button class="primary" type="submit">Connect</button>
-      <p class="form-message" id="sign-in-message" role="status"></p>
-    </form>
-    <details>
-      <summary>How do I get a token?</summary>
-      <ol>
-        <li>Open <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">GitHub → Fine-grained tokens → Generate new token</a>.</li>
-        <li><strong>Repository access:</strong> Only select repositories → <span id="repo-name-help">the menu repository</span>.</li>
-        <li><strong>Permissions → Contents:</strong> Read and write. Leave everything else as it is.</li>
-        <li>Generate, copy the token and paste it above. Share it only with people who should edit the menu.</li>
-      </ol>
-    </details>
-  </section>
-
-  <main class="admin-main" id="admin-main" hidden>
-    <!-- Dish list -->
-    <section class="panel dish-list">
-      <div class="panel-head">
-        <h2>Dishes</h2>
-        <button class="primary small" id="add-dish" type="button">+ Add dish</button>
+  <!-- Dashboard -->
+  <div class="shell" id="app" hidden>
+    <aside class="sidebar">
+      <div class="brand-block">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <div>
+          <strong id="side-name">AR Menu</strong>
+          <small>Menu admin</small>
+        </div>
       </div>
-      <div id="dishes"></div>
-    </section>
-
-    <!-- Add / edit form -->
-    <section class="panel editor" id="editor" hidden>
-      <div class="panel-head">
-        <h2 id="editor-title">Add dish</h2>
-        <button class="link-button" id="cancel-edit" type="button">Cancel</button>
+      <nav aria-label="Admin sections">
+        <a href="#items" data-view="items">Menu items</a>
+        <a href="#categories" data-view="categories">Categories</a>
+        <a href="#settings" data-view="settings">Settings</a>
+      </nav>
+      <div class="side-foot">
+        <a href="./" target="_blank" rel="noopener">View live menu ↗</a>
+        <button class="link-button" id="logout" type="button">Log out</button>
       </div>
+    </aside>
 
-      <form id="dish-form" novalidate>
-        <div class="grid">
-          <div class="field wide">
-            <label for="f-name">Name</label>
-            <input id="f-name" required maxlength="60" placeholder="Mushroom Swiss Burger">
+    <main class="workspace">
+      <!-- Menu items -->
+      <section class="view" id="view-items">
+        <header class="view-head">
+          <div>
+            <h1>Menu items</h1>
+            <p id="items-summary"></p>
           </div>
+          <button class="primary" id="new-item" type="button">+ New item</button>
+        </header>
+        <div class="toolbar">
+          <input id="search" type="search" placeholder="Search items" aria-label="Search items">
+          <select id="filter-category" aria-label="Filter by category"></select>
+          <select id="filter-status" aria-label="Filter by availability">
+            <option value="all">All items</option>
+            <option value="available">Available</option>
+            <option value="soldout">Sold out</option>
+            <option value="no3d">No 3D model</option>
+          </select>
+        </div>
+        <div id="items-list"></div>
+      </section>
+
+      <!-- Categories -->
+      <section class="view" id="view-categories" hidden>
+        <header class="view-head">
+          <div>
+            <h1>Categories</h1>
+            <p>Sections of the menu, in the order guests see them.</p>
+          </div>
+        </header>
+        <form class="inline-form" id="new-category-form">
+          <input id="new-category-name" placeholder="New category, e.g. Sides" maxlength="40" aria-label="New category name">
+          <button class="primary" type="submit">Add category</button>
+        </form>
+        <div id="categories-list"></div>
+      </section>
+
+      <!-- Settings -->
+      <section class="view" id="view-settings" hidden>
+        <header class="view-head">
+          <div>
+            <h1>Settings</h1>
+            <p>How the restaurant appears on the menu.</p>
+          </div>
+        </header>
+        <form class="settings-form" id="settings-form">
+          <label for="s-name">Restaurant name</label>
+          <input id="s-name" maxlength="60" required>
+          <label for="s-tagline">Tagline</label>
+          <input id="s-tagline" maxlength="140">
+          <label for="s-currency">Currency symbol</label>
+          <input id="s-currency" maxlength="4" required>
+          <button class="primary" type="submit">Save settings</button>
+        </form>
+      </section>
+    </main>
+  </div>
+
+  <!-- Item editor (side panel) -->
+  <dialog class="drawer" id="editor" aria-labelledby="editor-title">
+    <form id="item-form" novalidate>
+      <header class="drawer-head">
+        <h2 id="editor-title">New item</h2>
+        <button class="icon-button" type="button" id="editor-close" aria-label="Close">✕</button>
+      </header>
+
+      <div class="drawer-body">
+        <div class="field">
+          <label for="f-name">Name</label>
+          <input id="f-name" maxlength="80" required placeholder="Mushroom Swiss Burger">
+        </div>
+        <div class="row">
           <div class="field">
             <label for="f-category">Category</label>
             <select id="f-category"></select>
-          </div>
-          <div class="field" id="new-category-field" hidden>
-            <label for="f-new-category">New category name</label>
-            <input id="f-new-category" maxlength="40" placeholder="Sides">
           </div>
           <div class="field">
             <label for="f-price">Price</label>
             <input id="f-price" type="number" min="0" step="0.01" required placeholder="11.50">
           </div>
-          <div class="field wide">
-            <label for="f-description">Description</label>
-            <textarea id="f-description" rows="3" maxlength="240" placeholder="What's in it, how it's made"></textarea>
-          </div>
-          <div class="field wide">
-            <label for="f-tags">Tags <span class="hint">(comma separated, optional)</span></label>
-            <input id="f-tags" placeholder="New, Spicy">
-          </div>
         </div>
+        <div class="field">
+          <label for="f-description">Description</label>
+          <textarea id="f-description" rows="3" maxlength="400" placeholder="What's in it, how it's made"></textarea>
+        </div>
+        <div class="field">
+          <label for="f-tags">Tags <span class="hint">comma separated</span></label>
+          <input id="f-tags" placeholder="New, Spicy, Vegetarian">
+        </div>
+        <label class="switch-row" for="f-available">
+          <span><strong>Available</strong><small>Turn off to show it as sold out</small></span>
+          <input id="f-available" type="checkbox" class="switch" checked>
+        </label>
 
-        <fieldset class="model-box">
+        <fieldset class="media">
           <legend>3D model</legend>
-          <div class="field">
-            <label for="f-model">Model file (.glb)</label>
-            <input id="f-model" type="file" accept=".glb,.gltf,model/gltf-binary">
-            <p class="hint" id="model-hint">From KIRI Engine, Polycam, Sketchfab… export as GLB. For OBJ scans, convert with the dish scanner first.</p>
-          </div>
-          <div class="field">
-            <label for="f-width">Real width (cm)</label>
-            <input id="f-width" type="number" min="3" max="120" step="0.5" value="26" required>
-            <p class="hint">The widest part, e.g. the plate's diameter. The model is scaled to this size.</p>
-          </div>
-          <label class="check"><input id="f-scanned" type="checkbox"> 3D-scanned from the real dish</label>
-
-          <model-viewer id="admin-viewer" camera-controls auto-rotate shadow-intensity="1" environment-image="neutral"
+          <model-viewer id="viewer" camera-controls auto-rotate shadow-intensity="1" environment-image="neutral"
             camera-orbit="0deg 65deg auto" interaction-prompt="none" exposure="1.05"></model-viewer>
-          <p class="hint" id="model-info">Choose a model to preview it at real size.</p>
+          <p class="hint" id="model-info">No 3D model yet. Guests will see the photo only.</p>
+          <div class="row">
+            <div class="field">
+              <label for="f-model">Model file (.glb)</label>
+              <input id="f-model" type="file" accept=".glb,model/gltf-binary">
+            </div>
+            <div class="field">
+              <label for="f-width">Real width (cm)</label>
+              <input id="f-width" type="number" min="3" max="120" step="0.5" value="26">
+            </div>
+          </div>
+          <p class="hint">The widest part, e.g. the plate. The model is scaled to this size so it shows at real size in AR.
+            From KIRI Engine, Polycam or Sketchfab, export as GLB.</p>
+          <label class="check"><input id="f-scanned" type="checkbox"> 3D-scanned from the real dish</label>
         </fieldset>
 
-        <div class="form-actions">
-          <button class="danger" id="delete-dish" type="button" hidden>Delete dish</button>
-          <button class="primary" id="save-dish" type="submit">Publish dish</button>
-        </div>
+        <fieldset class="media">
+          <legend>Photo</legend>
+          <div class="photo-row">
+            <img id="photo-preview" alt="" hidden>
+            <div class="field">
+              <label for="f-photo">Upload a photo <span class="hint">optional</span></label>
+              <input id="f-photo" type="file" accept="image/png,image/jpeg,image/webp">
+              <p class="hint">Without a photo, the menu card uses a picture made from the 3D model.</p>
+            </div>
+          </div>
+        </fieldset>
+      </div>
+
+      <footer class="drawer-foot">
+        <button class="danger" id="delete-item" type="button" hidden>Delete</button>
         <p class="form-message" id="form-message" role="status"></p>
-      </form>
-    </section>
-  </main>
+        <button class="primary" id="save-item" type="submit">Save</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
 </body>
 </html>
