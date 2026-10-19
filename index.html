@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#121216">
+  <title>AR Menu</title>
+  <meta name="description" content="Browse the menu and see each dish on your table in augmented reality.">
+  <link rel="stylesheet" href="css/style.css">
+  <script type="module" src="vendor/model-viewer.min.js"></script>
+  <script type="module" src="js/app.js"></script>
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <h1 id="restaurant-name">AR Menu</h1>
+      <p id="restaurant-tagline"></p>
+    </div>
+  </header>
+
+  <nav class="tabs" id="tabs" aria-label="Menu categories"></nav>
+
+  <main id="menu" class="menu"></main>
+
+  <footer class="foot">Tap <strong>Preview</strong> to see a dish on your table, at real size.</footer>
+
+  <!-- Dish preview: 3D view + "View on your table" (AR) -->
+  <dialog id="preview" class="sheet" aria-labelledby="preview-name">
+    <div class="sheet-inner">
+      <button class="close" id="preview-close" aria-label="Close">✕</button>
+
+      <model-viewer id="viewer"
+        camera-controls
+        touch-action="pan-y"
+        auto-rotate
+        auto-rotate-delay="1500"
+        rotation-per-second="20deg"
+        shadow-intensity="1"
+        shadow-softness="0.8"
+        exposure="1.05"
+        environment-image="neutral"
+        camera-orbit="0deg 65deg auto"
+        ar
+        ar-modes="webxr scene-viewer quick-look"
+        ar-scale="fixed"
+        ar-placement="floor"
+        interaction-prompt="none"
+        loading="eager"
+        reveal="auto">
+        <div class="progress" slot="progress-bar"><span></span></div>
+        <button slot="ar-button" class="ar-button" id="ar-button">
+          <span class="ar-icon" aria-hidden="true"></span> View on your table
+        </button>
+      </model-viewer>
+
+      <!-- Shown instead of the 3D view when the browser can't do 3D (WebGL off) -->
+      <img id="fallback-image" class="fallback-image" alt="" hidden>
+
+      <div class="sheet-info">
+        <div class="sheet-title">
+          <h2 id="preview-name"></h2>
+          <span class="price" id="preview-price"></span>
+        </div>
+        <p id="preview-desc"></p>
+        <p class="meta" id="preview-size"></p>
+        <p class="no-ar" id="no-ar" hidden>
+          AR needs a phone camera: open this page on your phone (Android with Google Play Services for AR, or iPhone)
+          and tap <strong>View on your table</strong>.
+        </p>
+        <p class="no-ar" id="no-3d" hidden>
+          This browser can't show 3D (WebGL is turned off). Open the menu in Chrome or Safari on your phone to see the dish in 3D and AR.
+        </p>
+        <p class="ar-tip" id="ar-tip" hidden>
+          Point your phone at the table and move it slowly until the dish appears. It's shown at real size.
+        </p>
+      </div>
+    </div>
+  </dialog>
+</body>
+</html>

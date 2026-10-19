@@ -1,0 +1,22 @@
+{
+  "classic_cheeseburger": {
+    "width": 26.4,
+    "height": 9.4,
+    "depth": 26.4
+  },
+  "crispy_chicken": {
+    "width": 26.4,
+    "height": 8.5,
+    "depth": 26.4
+  },
+  "double_bacon": {
+    "width": 26.4,
+    "height": 10.5,
+    "depth": 26.4
+  },
+  "sesame_bun": {
+    "width": 28.0,
+    "height": 9.8,
+    "depth": 28.0
+  }
+}
