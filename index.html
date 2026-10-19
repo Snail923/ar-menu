@@ -7,6 +7,9 @@
   <title>AR Menu</title>
   <meta name="description" content="Browse the menu and see each dish on your table in augmented reality.">
   <link rel="stylesheet" href="css/style.css">
+  <script type="importmap">
+    { "imports": { "three": "./vendor/three/three.module.min.js", "three/addons/": "./vendor/three/addons/" } }
+  </script>
   <script type="module" src="vendor/model-viewer.min.js"></script>
   <script type="module" src="js/app.js"></script>
 </head>
@@ -41,7 +44,7 @@
         environment-image="neutral"
         camera-orbit="0deg 65deg auto"
         ar
-        ar-modes="webxr scene-viewer quick-look"
+        ar-modes="webxr quick-look"
         ar-scale="fixed"
         ar-placement="floor"
         interaction-prompt="none"
@@ -52,6 +55,10 @@
           <span class="ar-icon" aria-hidden="true"></span> View on your table
         </button>
       </model-viewer>
+      <!-- Phones without native AR: open the camera view instead -->
+      <button class="ar-button" id="camera-button" type="button" hidden>
+        <span class="ar-icon" aria-hidden="true"></span> View on your table
+      </button>
 
       <!-- Shown instead of the 3D view when the browser can't do 3D (WebGL off) -->
       <img id="fallback-image" class="fallback-image" alt="" hidden>
@@ -64,8 +71,7 @@
         <p id="preview-desc"></p>
         <p class="meta" id="preview-size"></p>
         <p class="no-ar" id="no-ar" hidden>
-          AR needs a phone camera: open this page on your phone (Android with Google Play Services for AR, or iPhone)
-          and tap <strong>View on your table</strong>.
+          To see the dish on your table, open this page on your phone and tap <strong>View on your table</strong>.
         </p>
         <p class="no-ar" id="no-3d" hidden>
           This browser can't show 3D (WebGL is turned off). Open the menu in Chrome or Safari on your phone to see the dish in 3D and AR.

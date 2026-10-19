@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Menu Admin</title>
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="stylesheet" href="css/admin.css">
+  <script type="importmap">
+    { "imports": { "three": "./vendor/three/three.module.min.js", "three/addons/": "./vendor/three/addons/" } }
+  </script>
+  <script type="module" src="vendor/model-viewer.min.js"></script>
+  <script type="module" src="js/admin.js"></script>
+</head>
+<body class="admin">
+  <header class="admin-top">
+    <div>
+      <h1>Menu admin</h1>
+      <p id="repo-line">Changes are published to the live menu.</p>
+    </div>
+    <div class="admin-top-actions">
+      <a href="./" target="_blank" rel="noopener">Open live menu ↗</a>
+      <button class="link-button" id="sign-out" type="button" hidden>Log out</button>
+    </div>
+  </header>
+
+  <!-- Step 1: admin login -->
+  <section class="panel sign-in" id="login-panel">
+    <h2>Admin login</h2>
+    <form id="login-form">
+      <label for="username">Username</label>
+      <input id="username" autocomplete="username" spellcheck="false" required>
+      <label for="password">Password</label>
+      <input id="password" type="password" autocomplete="current-password" required>
+      <button class="primary" type="submit">Log in</button>
+      <p class="form-message" id="login-message" role="status"></p>
+    </form>
+  </section>
+
+  <!-- Step 2 (once per device): connect publishing with a GitHub token that can write to the menu's repository -->
+  <section class="panel sign-in" id="sign-in-panel" hidden>
+    <h2>Connect publishing</h2>
+    <p>One time on this device: paste the <strong>GitHub access token</strong> for the menu's repository. The menu is saved there.</p>
+    <form id="sign-in-form">
+      <label for="token">GitHub access token</label>
+      <input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="github_pat_…" required>
+      <label class="check"><input id="remember" type="checkbox" checked> Remember on this device</label>
+      <button class="primary" type="submit">Connect</button>
+      <p class="form-message" id="sign-in-message" role="status"></p>
+    </form>
+    <details>
+      <summary>How do I get a token?</summary>
+      <ol>
+        <li>Open <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">GitHub → Fine-grained tokens → Generate new token</a>.</li>
+        <li><strong>Repository access:</strong> Only select repositories → <span id="repo-name-help">the menu repository</span>.</li>
+        <li><strong>Permissions → Contents:</strong> Read and write. Leave everything else as it is.</li>
+        <li>Generate, copy the token and paste it above. Share it only with people who should edit the menu.</li>
+      </ol>
+    </details>
+  </section>
+
+  <main class="admin-main" id="admin-main" hidden>
+    <!-- Dish list -->
+    <section class="panel dish-list">
+      <div class="panel-head">
+        <h2>Dishes</h2>
+        <button class="primary small" id="add-dish" type="button">+ Add dish</button>
+      </div>
+      <div id="dishes"></div>
+    </section>
+
+    <!-- Add / edit form -->
+    <section class="panel editor" id="editor" hidden>
+      <div class="panel-head">
+        <h2 id="editor-title">Add dish</h2>
+        <button class="link-button" id="cancel-edit" type="button">Cancel</button>
+      </div>
+
+      <form id="dish-form" novalidate>
+        <div class="grid">
+          <div class="field wide">
+            <label for="f-name">Name</label>
+            <input id="f-name" required maxlength="60" placeholder="Mushroom Swiss Burger">
+          </div>
+          <div class="field">
+            <label for="f-category">Category</label>
+            <select id="f-category"></select>
+          </div>
+          <div class="field" id="new-category-field" hidden>
+            <label for="f-new-category">New category name</label>
+            <input id="f-new-category" maxlength="40" placeholder="Sides">
+          </div>
+          <div class="field">
+            <label for="f-price">Price</label>
+            <input id="f-price" type="number" min="0" step="0.01" required placeholder="11.50">
+          </div>
+          <div class="field wide">
+            <label for="f-description">Description</label>
+            <textarea id="f-description" rows="3" maxlength="240" placeholder="What's in it, how it's made"></textarea>
+          </div>
+          <div class="field wide">
+            <label for="f-tags">Tags <span class="hint">(comma separated, optional)</span></label>
+            <input id="f-tags" placeholder="New, Spicy">
+          </div>
+        </div>
+
+        <fieldset class="model-box">
+          <legend>3D model</legend>
+          <div class="field">
+            <label for="f-model">Model file (.glb)</label>
+            <input id="f-model" type="file" accept=".glb,.gltf,model/gltf-binary">
+            <p class="hint" id="model-hint">From KIRI Engine, Polycam, Sketchfab… export as GLB. For OBJ scans, convert with the dish scanner first.</p>
+          </div>
+          <div class="field">
+            <label for="f-width">Real width (cm)</label>
+            <input id="f-width" type="number" min="3" max="120" step="0.5" value="26" required>
+            <p class="hint">The widest part, e.g. the plate's diameter. The model is scaled to this size.</p>
+          </div>
+          <label class="check"><input id="f-scanned" type="checkbox"> 3D-scanned from the real dish</label>
+
+          <model-viewer id="admin-viewer" camera-controls auto-rotate shadow-intensity="1" environment-image="neutral"
+            camera-orbit="0deg 65deg auto" interaction-prompt="none" exposure="1.05"></model-viewer>
+          <p class="hint" id="model-info">Choose a model to preview it at real size.</p>
+        </fieldset>
+
+        <div class="form-actions">
+          <button class="danger" id="delete-dish" type="button" hidden>Delete dish</button>
+          <button class="primary" id="save-dish" type="submit">Publish dish</button>
+        </div>
+        <p class="form-message" id="form-message" role="status"></p>
+      </form>
+    </section>
+  </main>
+</body>
+</html>

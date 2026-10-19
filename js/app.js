@@ -1,7 +1,21 @@
-import { CATEGORIES, RESTAURANT } from "./menu.js";
+// Motion-sensor permission must be requested directly inside the tap (iPhone), before the camera view loads.
+function requestMotionPermission() {
+  const DOE = window.DeviceOrientationEvent;
+  if (DOE && typeof DOE.requestPermission === "function") {
+    return DOE.requestPermission().then((r) => r === "granted").catch(() => false);
+  }
+  return Promise.resolve(true);
+}
 
 const $ = (id) => document.getElementById(id);
-const price = (p) => `${RESTAURANT.currency}${p.toFixed(2)}`;
+const isPhone = matchMedia("(pointer: coarse)").matches && "mediaDevices" in navigator;
+
+// The menu lives in data/menu.json (edited from admin.html).
+const menu = await fetch("data/menu.json", { cache: "no-cache" }).then((r) => r.json());
+const RESTAURANT = menu.restaurant;
+const CATEGORIES = menu.categories;
+const price = (p) => `${RESTAURANT.currency}${Number(p).toFixed(2)}`;
+let currentDish = null;
 
 const hasWebGL = (() => {
   try {
@@ -48,7 +62,7 @@ function renderMenu() {
           </div>
           <p>${dish.description}</p>
           <div class="card-foot">
-            <div class="tags">${dish.tags.map((t) => `<span class="tag${dish.scanned && t.includes("scan") ? " scan" : ""}">${t}</span>`).join("")}</div>
+            <div class="tags">${(dish.tags || []).map((t) => `<span class="tag${dish.scanned && t.includes("scan") ? " scan" : ""}">${t}</span>`).join("")}</div>
             <button class="preview-button" type="button">
               <span class="ar-icon" aria-hidden="true"></span> Preview
             </button>
@@ -67,6 +81,8 @@ function renderMenu() {
 // ------------------------------------------------------------------ preview (3D + AR)
 
 function openPreview(dish, push = true) {
+  currentDish = dish;
+  $("camera-button").hidden = true;
   $("preview-name").textContent = dish.name;
   $("preview-price").textContent = price(dish.price);
   $("preview-desc").textContent = dish.description;
@@ -97,10 +113,19 @@ function closePreview() {
 }
 
 viewer.addEventListener("load", () => {
-  // model-viewer knows after loading whether this device can show AR (phone camera + AR support).
-  const canAR = viewer.canActivateAR;
-  $("no-ar").hidden = canAR;
-  $("ar-tip").hidden = !canAR;
+  // model-viewer knows after loading whether the phone has native AR (Google's AR service on Android, or an
+  // iPhone). Other phones get the camera view, which only needs a camera and the motion sensors.
+  const nativeAR = viewer.canActivateAR;
+  const cameraView = !nativeAR && isPhone;
+  $("camera-button").hidden = !cameraView;
+  $("no-ar").hidden = nativeAR || cameraView;
+  $("ar-tip").hidden = !nativeAR;
+});
+
+$("camera-button").addEventListener("click", () => {
+  // Ask for the motion sensors right away: iPhones only allow it directly inside the tap.
+  const motion = requestMotionPermission();
+  import("./camera-view.js").then((m) => m.openCameraView(currentDish, motion));
 });
 
 // Thin loading bar along the top of the 3D view.
@@ -113,8 +138,10 @@ viewer.addEventListener("progress", (e) => {
 
 viewer.addEventListener("ar-status", (e) => {
   if (e.detail.status === "failed") {
-    $("no-ar").hidden = false;
+    // Native AR couldn't start: offer the camera view instead.
     $("ar-tip").hidden = true;
+    $("camera-button").hidden = !isPhone;
+    $("no-ar").hidden = isPhone;
   }
 });
 
